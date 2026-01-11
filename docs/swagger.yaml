@@ -1,0 +1,76 @@
+basePath: /
+definitions:
+  models.FixRequest:
+    properties:
+      id:
+        type: string
+      license_number:
+        type: string
+    type: object
+host: localhost:9000
+info:
+  contact: {}
+  description: API для автоматического исправления файлов.
+  title: DoctorDoc API
+  version: "1.0"
+paths:
+  /api/v1/download/{id}:
+    get:
+      parameters:
+      - description: ID файла
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/octet-stream
+      responses: {}
+      summary: Скачать файл
+      tags:
+      - files
+  /api/v1/fix:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Данные для исправления
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/models.FixRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Исправить данные
+      tags:
+      - processing
+  /api/v1/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      parameters:
+      - description: Excel file
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Загрузить файл Excel
+      tags:
+      - files
+swagger: "2.0"

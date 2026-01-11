@@ -1,0 +1,6 @@
+phone,amount,comment
+8 999 123 45 67,  10000,ok
++7 912  5556677,оплата,string instead of amount
+ 8 800 555 35 35,   2500 ,leading spaces
+7912 000 1122,N/A,not a number
+  8 9031234567 ,   99999,spaces everywhere

@@ -1,0 +1,6 @@
+phone;amount;comment
+79991234567;10000;ok
+79125556677;оплата;string instead of amount
+88005553535;2500;leading spaces
+79120001122;N/A;not a number
+79031234567;99999;spaces everywhere
