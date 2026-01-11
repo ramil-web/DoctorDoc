@@ -106,28 +106,35 @@ func (s *fileService) StartWorker(ctx context.Context) {
        go func() {
           for {
              res, err := s.rdb.BLPop(ctx, 0, "file_processing_queue").Result()
-             if err != nil {
-                continue
-             }
+             if err != nil { continue }
              fileID := res[1]
 
              meta, err := s.repo.GetFileMeta(ctx, fileID)
-             if err != nil {
-                continue
-             }
+             if err != nil { continue }
 
              meta.Status = "processing"
              s.repo.SaveFileMeta(ctx, *meta)
 
-             if err := s.processCSV(meta, false); err != nil {
-                log.Printf("❌ Ошибка обработки %s: %v", fileID, err)
+             // ПРОВЕРКА РАСШИРЕНИЯ
+             ext := strings.ToLower(filepath.Ext(meta.OriginalName))
+             var procErr error
+
+             if ext == ".txt" {
+                 procErr = s.processTXT(meta, false)
+             } else {
+                 // По умолчанию используем CSV логику (для .csv и прочих)
+                 procErr = s.processCSV(meta, false)
+             }
+
+             if procErr != nil {
+                log.Printf("❌ Ошибка обработки %s: %v", fileID, procErr)
                 meta.Status = "error"
              } else {
                 meta.Status = "analyzed"
              }
 
              s.repo.SaveFileMeta(ctx, *meta)
-             log.Printf("✅ Анализ завершен: %s (Ошибок: %d)", fileID, len(meta.Errors))
+             log.Printf("✅ Анализ завершен: %s (%s)", fileID, ext)
           }
        }()
     }
@@ -211,7 +218,18 @@ func (s *fileService) GetStatus(id string) (string, []models.FileError, error) {
 func (s *fileService) FixFile(ctx context.Context, req models.FixRequest) error {
     meta, err := s.repo.GetFileMeta(ctx, req.ID)
     if err != nil { return err }
-    if err := s.processCSV(meta, true); err != nil { return err }
+
+    ext := strings.ToLower(filepath.Ext(meta.OriginalName))
+    var procErr error
+
+    if ext == ".txt" {
+        procErr = s.processTXT(meta, true)
+    } else {
+        procErr = s.processCSV(meta, true)
+    }
+
+    if procErr != nil { return procErr }
+
     meta.Status = "completed"
     return s.repo.SaveFileMeta(ctx, *meta)
 }
@@ -230,4 +248,34 @@ func (s *fileService) GetFilePath(ctx context.Context, id string) (string, error
 
 func (s *fileService) UpdateFileMeta(ctx context.Context, meta models.FileMetadata) error {
     return s.repo.SaveFileMeta(ctx, meta)
+}
+
+func (s *fileService) processTXT(meta *models.FileMetadata, save bool) error {
+    content, err := os.ReadFile(meta.FilePath)
+    if err != nil {
+        return err
+    }
+
+    lines := strings.Split(string(content), "\n")
+    meta.Errors = []models.FileError{}
+
+    var newLines []string
+    for i, line := range lines {
+        // Очищаем строку. Так как в TXT нет колонок, передаем Col: 1
+        cleaned, errs := s.cleanValue(line, i+1, 1)
+
+        if save {
+            newLines = append(newLines, cleaned)
+        } else {
+            if len(meta.Errors) < 2000 {
+                meta.Errors = append(meta.Errors, errs...)
+            }
+        }
+    }
+
+    meta.RowsCount = len(lines)
+    if save {
+        return os.WriteFile(meta.FilePath, []byte(strings.Join(newLines, "\n")), 0644)
+    }
+    return nil
 }
