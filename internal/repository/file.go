@@ -29,29 +29,23 @@ func NewRepository(db *sql.DB) Repository {
 }
 
 func (r *pgRepo) SaveFileMeta(ctx context.Context, meta models.FileMetadata) error {
-    // Добавлена колонка is_downloaded ($10)
     query := `INSERT INTO files (id, original_name, file_path, status, rows_count, stats, errors, created_at, fingerprint, is_downloaded)
               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
               ON CONFLICT (id) DO UPDATE SET
                 status = EXCLUDED.status,
                 errors = EXCLUDED.errors,
                 rows_count = EXCLUDED.rows_count,
-                is_downloaded = EXCLUDED.is_downloaded` // Важно для фиксации скачивания
+                is_downloaded = EXCLUDED.is_downloaded,
+                fingerprint = COALESCE(NULLIF(EXCLUDED.fingerprint, ''), files.fingerprint)`
+                // ^ ЭТА СТРОКА: если EXCLUDED.fingerprint пустой, оставить тот, что уже в базе
 
     statsJSON, _ := json.Marshal(meta.Stats)
     errorsJSON, _ := json.Marshal(meta.Errors)
 
     _, err := r.db.ExecContext(ctx, query,
-        meta.ID,
-        meta.OriginalName,
-        meta.FilePath,
-        meta.Status,
-        meta.RowsCount,
-        statsJSON,
-        errorsJSON,
-        meta.CreatedAt,
-        meta.Fingerprint,
-        meta.IsDownloaded, // Сохраняем флаг из модели
+        meta.ID, meta.OriginalName, meta.FilePath, meta.Status,
+        meta.RowsCount, statsJSON, errorsJSON, meta.CreatedAt,
+        meta.Fingerprint, meta.IsDownloaded,
     )
     return err
 }

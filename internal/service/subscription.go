@@ -16,6 +16,7 @@ type SubscriptionService interface {
 	ProcessPayment(email, amountStr string) error
 	IsAccessAllowed(ctx context.Context, ip, fp string) (bool, error)
 	IncrementUsage(ctx context.Context, fp string) error
+	IncrementUsageWithCount(ctx context.Context, fp string) (int, error)
 }
 
 type subscriptionService struct {
@@ -100,4 +101,9 @@ func (s *subscriptionService) sendEmail(to, code, plan string) {
 	msg := []byte(fmt.Sprintf("Subject: Ваш код DoctorDoc\r\n\r\nСпасибо за покупку тарифа \"%s\".\nВаш код активации: %s", plan, code))
 	auth := smtp.PlainAuth("", from, os.Getenv("SMTP_PASSWORD"), os.Getenv("SMTP_HOST"))
 	_ = smtp.SendMail(os.Getenv("SMTP_HOST")+":"+os.Getenv("SMTP_PORT"), auth, from, []string{to}, msg)
+}
+
+func (s *subscriptionService) IncrementUsageWithCount(ctx context.Context, fp string) (int, error) {
+	fmt.Printf("📡 [SERVICE] Вызов IncrementUsageWithCount для FP: %s\n", fp)
+	return s.repo.IncrementUsage(ctx, fp)
 }

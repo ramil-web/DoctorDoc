@@ -5,23 +5,30 @@ import (
 	"database/sql"
 	"doctordoc/internal/models"
 	"time"
+	"fmt"
 )
 
 func (r *pgRepo) IncrementUsage(ctx context.Context, fp string) (int, error) {
-    var count int
-    query := `
+	var count int
+	query := `
         INSERT INTO usage_stats (fingerprint, count, updated_at)
         VALUES ($1, 1, NOW())
         ON CONFLICT (fingerprint) DO UPDATE SET
             count = CASE
-                WHEN usage_stats.updated_at < CURRENT_DATE THEN 1
+                WHEN usage_stats.updated_at::date < CURRENT_DATE THEN 1
                 ELSE usage_stats.count + 1
             END,
             updated_at = NOW()
         RETURNING count`
 
-    err := r.db.QueryRowContext(ctx, query, fp).Scan(&count)
-    return count, err
+	fmt.Printf("🗄️ [SQL] Выполняю запрос для FP: %s\n", fp)
+	err := r.db.QueryRowContext(ctx, query, fp).Scan(&count)
+	if err != nil {
+		fmt.Printf("❌ [SQL ERROR] Ошибка выполнения Scan: %v\n", err)
+		return 0, err
+	}
+	fmt.Printf("📊 [SQL RESULT] В базе теперь значение: %d\n", count)
+	return count, nil
 }
 
 func (r *pgRepo) GetUsageCount(ctx context.Context, fp string) (int, error) {
