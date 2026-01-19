@@ -5,41 +5,41 @@ import (
 	"database/sql"
 	"doctordoc/internal/models"
 	"time"
-	"fmt"
 )
 
-func (r *pgRepo) IncrementUsage(ctx context.Context, fp string) (int, error) {
-	var count int
-	query := `
-        INSERT INTO usage_stats (fingerprint, count, updated_at)
-        VALUES ($1, 1, NOW())
+// IncrementUsage теперь принимает и IP
+func (r *pgRepo) IncrementUsage(ctx context.Context, fp string, ip string) (int, error) {
+    var count int
+    // Теперь, когда fp одинаковый для Chrome и Firefox (hw_...),
+    // этот запрос ВСЕГДА будет попадать в одну и ту же строку.
+    query := `
+        INSERT INTO usage_stats (fingerprint, ip_address, count, updated_at)
+        VALUES ($1, $2, 1, NOW())
         ON CONFLICT (fingerprint) DO UPDATE SET
             count = CASE
                 WHEN usage_stats.updated_at::date < CURRENT_DATE THEN 1
                 ELSE usage_stats.count + 1
             END,
+            ip_address = EXCLUDED.ip_address,
             updated_at = NOW()
         RETURNING count`
 
-	fmt.Printf("🗄️ [SQL] Выполняю запрос для FP: %s\n", fp)
-	err := r.db.QueryRowContext(ctx, query, fp).Scan(&count)
-	if err != nil {
-		fmt.Printf("❌ [SQL ERROR] Ошибка выполнения Scan: %v\n", err)
-		return 0, err
-	}
-	fmt.Printf("📊 [SQL RESULT] В базе теперь значение: %d\n", count)
-	return count, nil
+    err := r.db.QueryRowContext(ctx, query, fp, ip).Scan(&count)
+    return count, err
 }
 
-func (r *pgRepo) GetUsageCount(ctx context.Context, fp string) (int, error) {
+// GetUsageCount теперь ищет по обоим параметрам
+func (r *pgRepo) GetUsageCount(ctx context.Context, fp string, ip string) (int, error) {
     var count int
-    // Считаем только те записи, что были обновлены СЕГОДНЯ
-    query := `SELECT count FROM usage_stats WHERE fingerprint = $1 AND updated_at::date = CURRENT_DATE`
-    err := r.db.QueryRowContext(ctx, query, fp).Scan(&count)
+    // Считаем сумму по IP. Даже если в базе каким-то чудом
+    // остались старые записи с разными FP, этот запрос их склеит.
+    query := `
+        SELECT COALESCE(SUM(count), 0)
+        FROM usage_stats
+        WHERE (ip_address = $1 OR fingerprint = $2)
+        AND updated_at::date = CURRENT_DATE`
 
-    if err == sql.ErrNoRows {
-        return 0, nil
-    }
+    err := r.db.QueryRowContext(ctx, query, ip, fp).Scan(&count)
     return count, err
 }
 

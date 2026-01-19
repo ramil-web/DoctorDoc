@@ -13,11 +13,11 @@ type Repository interface {
     GetFileMeta(ctx context.Context, id string) (*models.FileMetadata, error)
     CheckLicense(ctx context.Context, keyHash string) (*models.License, error)
     SaveLicense(ctx context.Context, l models.License) error
-    IncrementUsage(ctx context.Context, fp string) (int, error)
-    GetUsageCount(ctx context.Context, fp string) (int, error)
+    IncrementUsage(ctx context.Context, fp string, ip string) (int, error)
     CreateSubscription(email, plan string, duration time.Duration, code string) error
     CheckActiveSubscription(ip, fp string) (bool, error)
     GetDailyUsage(ip, fp string) (int, error)
+    GetUsageCount(ctx context.Context, fingerprint string, ip string) (int, error)
 }
 
 type pgRepo struct {

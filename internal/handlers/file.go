@@ -1,141 +1,211 @@
 package handlers
 
 import (
-    "doctordoc/internal/models"
-    "doctordoc/internal/service"
-    "encoding/json"
-    "fmt"
-    "io"
-    "net/http"
-    "os"
-    "time"
+	"doctordoc/internal/models"
+	"doctordoc/internal/service"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"time"
 
-    "github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5"
 )
 
 type FileHandler struct {
-    svc    service.FileService
-    subSvc service.SubscriptionService
+	svc    service.FileService
+	subSvc service.SubscriptionService
 }
 
 func NewFileHandler(svc service.FileService, subSvc service.SubscriptionService) *FileHandler {
-    return &FileHandler{svc: svc, subSvc: subSvc}
+	return &FileHandler{svc: svc, subSvc: subSvc}
+}
+
+func getRealIP(r *http.Request) string {
+	ip := r.Header.Get("X-Forwarded-For")
+	if ip == "" {
+		ip = r.RemoteAddr
+	}
+	if strings.Contains(ip, ",") {
+		ip = strings.Split(ip, ",")[0]
+	}
+	if strings.Contains(ip, ":") {
+		host, _, err := net.SplitHostPort(ip)
+		if err == nil {
+			ip = host
+		}
+	}
+	return strings.TrimSpace(ip)
+}
+
+// GetDeviceID — теперь ID генерируется ТОЛЬКО на бэке, по IP
+// hwData принимаем, но не используем (будет удалено позже)
+func (h *FileHandler) GetDeviceID(w http.ResponseWriter, r *http.Request) {
+	// читаем тело, чтобы не ломать контракт
+	_ = json.NewDecoder(r.Body).Decode(&map[string]interface{}{})
+
+	ip := getRealIP(r)
+	deviceID := h.svc.GenerateHardwareHash(ip)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"device_id": deviceID,
+	})
 }
 
 func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
-    r.ParseMultipartForm(10 << 20)
-    file, header, err := r.FormFile("file")
-    if err != nil {
-       http.Error(w, "INVALID_FILE", http.StatusBadRequest)
-       return
-    }
-    defer file.Close()
+	_ = r.ParseMultipartForm(10 << 20)
 
-    fp := r.FormValue("fingerprint")
-    fileSizeMB := float64(header.Size) / (1024 * 1024)
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "INVALID_FILE", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
 
-    can, _ := h.svc.CanUpload(r.Context(), fp, fileSizeMB)
-    if !can {
-       w.WriteHeader(http.StatusForbidden)
-       json.NewEncoder(w).Encode(map[string]string{"error": "LIMIT_EXCEEDED"})
-       return
-    }
+	// fingerprint с фронта игнорируется
+	fp := r.FormValue("fingerprint")
+	_ = fp
 
-    content, _ := io.ReadAll(file)
-    id, err := h.svc.ProcessFile(r.Context(), header.Filename, content, fp)
-    if err != nil {
-       http.Error(w, err.Error(), http.StatusInternalServerError)
-       return
-    }
+	ip := getRealIP(r)
+	fileSizeMB := float64(header.Size) / (1024 * 1024)
 
-    json.NewEncoder(w).Encode(map[string]string{"id": id})
+	can, err := h.svc.CanUpload(r.Context(), "", ip, fileSizeMB)
+	if err != nil || !can {
+		w.WriteHeader(http.StatusForbidden)
+		errMsg := "LIMIT_EXCEEDED"
+		if err != nil && err.Error() == "FILE_TOO_LARGE" {
+			errMsg = "FILE_TOO_LARGE"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		return
+	}
+
+	content, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "READ_ERROR", http.StatusInternalServerError)
+		return
+	}
+
+	id, err := h.svc.ProcessFile(r.Context(), header.Filename, content, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"id": id})
 }
 
 func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
-    id := chi.URLParam(r, "id")
-    queryFP := r.URL.Query().Get("fp")
+	id := chi.URLParam(r, "id")
+	ip := getRealIP(r)
 
-    meta, err := h.svc.GetFileMeta(r.Context(), id)
-    if err != nil {
-        http.Error(w, "FILE_NOT_FOUND", http.StatusNotFound)
-        return
-    }
+	meta, err := h.svc.GetFileMeta(r.Context(), id)
+	if err != nil {
+		http.Error(w, "FILE_NOT_FOUND", http.StatusNotFound)
+		return
+	}
 
-    // Привязываем FP если его нет
-    if meta.Fingerprint == "" && queryFP != "" {
-        meta.Fingerprint = queryFP
-        h.svc.UpdateFileMeta(r.Context(), meta)
-    }
+	file, err := os.Open(meta.FilePath)
+	if err != nil {
+		http.Error(w, "FILE_NOT_FOUND_ON_DISK", http.StatusNotFound)
+		return
+	}
+	defer file.Close()
 
-    // Открываем файл
-    file, err := os.Open(meta.FilePath)
-    if err != nil {
-        http.Error(w, "FILE_NOT_FOUND_ON_DISK", http.StatusNotFound)
-        return
-    }
-    defer file.Close()
+	info, _ := file.Stat()
+	size := info.Size()
 
-    // Получаем информацию о файле для размера
-    fileInfo, _ := file.Stat()
-    fileSize := fileInfo.Size()
+	w.Header().Set("Content-Disposition", "attachment; filename="+meta.OriginalName)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
 
-    // Устанавливаем заголовки
-    w.Header().Set("Content-Disposition", "attachment; filename="+meta.OriginalName)
-    w.Header().Set("Content-Type", "application/octet-stream")
-    w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+	written, err := io.Copy(w, file)
+	if err != nil {
+		return
+	}
 
-    // 🚀 СТРИМИНГ ФАЙЛА С ПРОВЕРКОЙ
-    // io.Copy будет ждать, пока все байты не уйдут клиенту
-    written, err := io.Copy(w, file)
-
-    if err != nil {
-        fmt.Printf("❌ [DOWNLOAD] Обрыв соединения для %s: %v\n", id, err)
-        return
-    }
-
-    // ПРОВЕРКА: Списываем лимит только если файл передан ПОЛНОСТЬЮ
-    if written == fileSize {
-        fmt.Printf("✅ [DOWNLOAD] Файл %s успешно доставлен (%d байт)\n", id, written)
-
-        if !meta.IsDownloaded && meta.Fingerprint != "" && meta.Status == "completed" {
-            newCount, err := h.subSvc.IncrementUsageWithCount(r.Context(), meta.Fingerprint)
-            if err == nil {
-                meta.IsDownloaded = true
-                h.svc.UpdateFileMeta(r.Context(), meta)
-                logDownloadAction(meta.Fingerprint, id, newCount, "SUCCESS_FULL_DELIVERY")
-            }
-        }
-    } else {
-        fmt.Printf("⚠️ [DOWNLOAD] Файл передан частично: %d из %d байт. Лимит не списан.\n", written, fileSize)
-    }
+	if written == size && !meta.IsDownloaded && meta.Status == "completed" {
+		// usage учитывается по machineID (внутри сервиса)
+		_ = h.svc.RecordDownload(r.Context(), id, ip)
+		meta.IsDownloaded = true
+		_ = h.svc.UpdateFileMeta(r.Context(), meta)
+	}
 }
 
 func (h *FileHandler) Fix(w http.ResponseWriter, r *http.Request) {
-    var req struct {
-       ID            string `json:"id"`
-       LicenseNumber string `json:"license_number"`
-    }
-    json.NewDecoder(r.Body).Decode(&req)
+	var req struct {
+		ID          string `json:"id"`
+		Fingerprint string `json:"fingerprint"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "INVALID_JSON", http.StatusBadRequest)
+		return
+	}
 
-    fixReq := models.FixRequest{ID: req.ID, LicenseNumber: req.LicenseNumber}
-    if err := h.svc.FixFile(r.Context(), fixReq); err != nil {
-       http.Error(w, err.Error(), http.StatusInternalServerError)
-       return
-    }
+	ip := getRealIP(r)
 
-    json.NewEncoder(w).Encode(map[string]string{"status": "completed"})
+	can, _ := h.svc.CanUpload(r.Context(), "", ip, 0)
+	if !can {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "LIMIT_EXCEEDED"})
+		return
+	}
+
+	fixReq := models.FixRequest{ID: req.ID}
+	if err := h.svc.FixFile(r.Context(), fixReq); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "completed"})
 }
 
 func (h *FileHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
-    id := chi.URLParam(r, "id")
-    status, errs, _ := h.svc.GetStatus(id)
-    json.NewEncoder(w).Encode(map[string]interface{}{"status": status, "errors": errs})
+	id := chi.URLParam(r, "id")
+	status, errs, _ := h.svc.GetStatus(id)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": status,
+		"errors": errs,
+	})
+}
+
+func (h *FileHandler) CheckLimit(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+
+	// fingerprint с фронта игнорируем
+	_ = r.Header.Get("X-Client-Fingerprint")
+
+	ip := getRealIP(r)
+
+	allowed, _ := h.svc.CanUpload(r.Context(), "", ip, 0)
+	if !allowed {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "LIMIT_EXCEEDED"})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func logDownloadAction(fp, fileID string, count int, status string) {
-    f, err := os.OpenFile("downloads_audit.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-    if err != nil { return }
-    defer f.Close()
-    line := fmt.Sprintf("[%s] FP: %s | ID: %s | Count: %d | Status: %s\n", time.Now().Format("15:04:05"), fp, fileID, count, status)
-    f.WriteString(line)
+	f, err := os.OpenFile("downloads_audit.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	line := fmt.Sprintf(
+		"[%s] FP:%s | ID:%s | Count:%d | Status:%s\n",
+		time.Now().Format("15:04:05"),
+		fp,
+		fileID,
+		count,
+		status,
+	)
+	_, _ = f.WriteString(line)
 }
