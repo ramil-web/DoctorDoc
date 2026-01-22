@@ -138,31 +138,44 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *FileHandler) Fix(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID          string `json:"id"`
-		Fingerprint string `json:"fingerprint"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "INVALID_JSON", http.StatusBadRequest)
-		return
-	}
+    var req struct {
+       ID           string `json:"id"`
+       Fingerprint  string `json:"fingerprint"`
+       CustomColumn string `json:"custom_column"`
+       CustomFormat string `json:"custom_format"`
+       SelectedRows []int  `json:"selected_rows"`
+    }
 
-	ip := getRealIP(r)
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+       http.Error(w, "INVALID_JSON", http.StatusBadRequest)
+       return
+    }
 
-	can, _ := h.svc.CanUpload(r.Context(), "", ip, 0)
-	if !can {
-		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "LIMIT_EXCEEDED"})
-		return
-	}
+    ip := getRealIP(r)
 
-	fixReq := models.FixRequest{ID: req.ID}
-	if err := h.svc.FixFile(r.Context(), fixReq); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+    // Проверка лимитов (fingerprint игнорируем, работаем по IP)
+    can, _ := h.svc.CanUpload(r.Context(), "", ip, 0)
+    if !can {
+       w.WriteHeader(http.StatusForbidden)
+       _ = json.NewEncoder(w).Encode(map[string]string{"error": "LIMIT_EXCEEDED"})
+       return
+    }
 
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "completed"})
+    // Создаем структуру запроса для сервиса
+    fixReq := models.FixRequest{
+        ID:           req.ID,
+        CustomColumn: req.CustomColumn,
+        CustomFormat: req.CustomFormat,
+        SelectedRows: req.SelectedRows,
+    }
+
+    if err := h.svc.FixFile(r.Context(), fixReq); err != nil {
+       http.Error(w, err.Error(), http.StatusInternalServerError)
+       return
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    _ = json.NewEncoder(w).Encode(map[string]string{"status": "completed"})
 }
 
 func (h *FileHandler) GetStatus(w http.ResponseWriter, r *http.Request) {

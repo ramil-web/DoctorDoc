@@ -5,7 +5,6 @@ import (
 	"encoding/csv"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -24,7 +23,6 @@ func (s *fileService) processCSV(meta *models.FileMetadata, save bool) error {
 
 	reader := csv.NewReader(strings.NewReader(raw))
 	reader.Comma = sep
-	// Позволяем переменное количество полей, чтобы не падать на кривых строках
 	reader.FieldsPerRecord = -1
 	records, err := reader.ReadAll()
 	if err != nil {
@@ -38,27 +36,16 @@ func (s *fileService) processCSV(meta *models.FileMetadata, save bool) error {
 	}
 	headers := records[0]
 
-	// РЕГУЛЯРНЫЕ ВЫРАЖЕНИЯ (Один в один как в XLSX)
 	reEmail := regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`)
-	reDate := regexp.MustCompile(`(\d{1,2})[./-]{1,2}(\d{1,2})[./-]{1,2}(\d{2,4})`)
 	rePhone := regexp.MustCompile(`(\+7|7|8)?[\s\-]?\(?[9][0-9]{2}\)?[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}`)
-	reINN := regexp.MustCompile(`^\d{10}$|^\d{12}$`)
-	reBIK := regexp.MustCompile(`^04\d{7}$`)
-	reOGRN := regexp.MustCompile(`^\d{13}$|^\d{15}$`)
-	reNonDigits := regexp.MustCompile(`\D`)
+	reSimpleDate := regexp.MustCompile(`^(\d{2,4})[/-](\d{1,2})[/-](\d{2,4})$`)
 
 	for i, row := range records {
-		// Пропускаем заголовок точно так же, как в XLSX
-		if i == 0 {
-			continue
-		}
+		if i == 0 { continue }
 
 		for j, cell := range row {
-			if strings.TrimSpace(cell) == "" {
-				continue
-			}
+			if cell == "" { continue }
 
-			// Определяем имя колонки из заголовков
 			colName := "НЕИЗВЕСТНО"
 			if j < len(headers) && headers[j] != "" {
 				colName = headers[j]
@@ -68,77 +55,55 @@ func (s *fileService) processCSV(meta *models.FileMetadata, save bool) error {
 			currentResult := trimmed
 			foundError := false
 
-			// 1. ПРОВЕРКА НА ПОЧТУ (с удалением пробелов внутри)
-			if strings.Contains(trimmed, "@") {
+			// 1. ПОЧТА
+			if strings.Contains(trimmed, "@") && strings.Contains(trimmed, " ") {
 				noSpaces := strings.ReplaceAll(trimmed, " ", "")
-				found := reEmail.FindString(noSpaces)
-				if found != "" {
-					currentResult = strings.ToLower(found)
+				if reEmail.MatchString(noSpaces) {
+					currentResult = strings.ToLower(noSpaces)
 					foundError = true
 				}
 			}
 
-			// 2. ПРОВЕРКА НА ТЕЛЕФОН
-			if !foundError {
-				if rePhone.MatchString(trimmed) {
-					digits := reNonDigits.ReplaceAllString(trimmed, "")
-					if len(digits) >= 10 {
-						currentResult = "7" + digits[len(digits)-10:]
+			// 2. ТЕЛЕФОН
+			if !foundError && rePhone.MatchString(trimmed) {
+				digits := regexp.MustCompile(`\D`).ReplaceAllString(trimmed, "")
+				if len(digits) >= 10 {
+					formatted := "7" + digits[len(digits)-10:]
+					if formatted != cell {
+						currentResult = formatted
 						foundError = true
 					}
 				}
 			}
 
-			// 3. ПРОВЕРКА НА ДАТУ
-			if !foundError {
-				if reDate.MatchString(trimmed) {
-					norm := regexp.MustCompile(`[/-]`).ReplaceAllString(trimmed, ".")
-					norm = regexp.MustCompile(`\.{2,}`).ReplaceAllString(norm, ".")
-					layouts := []string{"02.01.2006", "2.1.2006", "02.01.06", "2006.01.02"}
-					for _, l := range layouts {
-						if t, err := time.Parse(l, norm); err == nil {
-							currentResult = t.Format("02.01.2006")
+			// 3. ДАТА
+			if !foundError && !strings.Contains(trimmed, ":") && reSimpleDate.MatchString(trimmed) {
+				norm := regexp.MustCompile(`[/-]`).ReplaceAllString(trimmed, ".")
+				layouts := []string{"02.01.2006", "2006.01.02", "02.01.06"}
+				for _, l := range layouts {
+					if t, err := time.Parse(l, norm); err == nil {
+						currentResult = t.Format("02.01.2006")
+						if currentResult != cell {
 							foundError = true
-							break
 						}
+						break
 					}
 				}
 			}
 
-			// 4. ПРОВЕРКА НА СУММУ
-			if !foundError {
-				cleanSum := strings.ReplaceAll(trimmed, ",", ".")
-				cleanSum = regexp.MustCompile(`[^\d.]`).ReplaceAllString(cleanSum, "")
-				if _, err := strconv.ParseFloat(cleanSum, 64); err == nil && cleanSum != "" {
-					if cleanSum != cell {
-						currentResult = cleanSum
-						foundError = true
-					}
-				}
-			}
-
-			// 5. ИНН / БИК / ОГРН
-			if !foundError {
-				onlyDigits := reNonDigits.ReplaceAllString(trimmed, "")
-				if reINN.MatchString(onlyDigits) || reBIK.MatchString(onlyDigits) || reOGRN.MatchString(onlyDigits) {
-					currentResult = onlyDigits
-					foundError = true
-				}
-			}
-
-			// 6. ЛИШНИЕ ПРОБЕЛЫ
-			if !foundError && trimmed != cell {
+			// 4. ПРОБЕЛЫ ПО КРАЯМ
+			if !foundError && cell != trimmed {
 				currentResult = trimmed
 				foundError = true
 			}
 
-			// ФИНАЛЬНЫЙ СБОР ОШИБОК (как в XLSX)
-			if currentResult != cell && foundError {
+			// РЕГИСТРАЦИЯ
+			if foundError && currentResult != cell {
 				meta.Errors = append(meta.Errors, models.FileError{
 					Row:         i + 1,
 					Column:      colName,
-					OldValue:    cell,
-					NewValue:    currentResult,
+					OldValue:    `"` + cell + `"`,
+					NewValue:    `"` + currentResult + `"`,
 					Description: colName,
 				})
 
@@ -158,7 +123,6 @@ func (s *fileService) processCSV(meta *models.FileMetadata, save bool) error {
 
 		w := csv.NewWriter(f2)
 		w.Comma = sep
-		// Важно: Flush гарантирует запись данных из буфера в файл
 		if err := w.WriteAll(records); err != nil {
 			return err
 		}

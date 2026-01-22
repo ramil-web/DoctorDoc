@@ -41,8 +41,11 @@ type License struct {
 }
 
 type FixRequest struct {
-	ID            string `json:"id"`
-	LicenseNumber string `json:"license_number"`
+    ID            string   `json:"id"`
+    LicenseNumber string   `json:"license_number"`
+    CustomColumn  string   `json:"custom_column"`
+    CustomFormat  string   `json:"custom_format"`
+    SelectedRows  []int    `json:"selected_rows"`
 }
 
 type Subscription struct {

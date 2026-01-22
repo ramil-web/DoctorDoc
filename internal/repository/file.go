@@ -18,6 +18,10 @@ type Repository interface {
     CheckActiveSubscription(ip, fp string) (bool, error)
     GetDailyUsage(ip, fp string) (int, error)
     GetUsageCount(ctx context.Context, fingerprint string, ip string) (int, error)
+    GetUsageWithTime(ctx context.Context, fp string, ip string) (int, time.Time, error)
+    GetDistinctDevicesCount(ctx context.Context, ip string) (int, error)
+    // Добавлен метод для работы активации ключей
+    ActivateLicense(ctx context.Context, key string, fp string) (models.Subscription, error)
 }
 
 type pgRepo struct {
@@ -37,7 +41,6 @@ func (r *pgRepo) SaveFileMeta(ctx context.Context, meta models.FileMetadata) err
                 rows_count = EXCLUDED.rows_count,
                 is_downloaded = EXCLUDED.is_downloaded,
                 fingerprint = COALESCE(NULLIF(EXCLUDED.fingerprint, ''), files.fingerprint)`
-                // ^ ЭТА СТРОКА: если EXCLUDED.fingerprint пустой, оставить тот, что уже в базе
 
     statsJSON, _ := json.Marshal(meta.Stats)
     errorsJSON, _ := json.Marshal(meta.Errors)
@@ -54,7 +57,6 @@ func (r *pgRepo) GetFileMeta(ctx context.Context, id string) (*models.FileMetada
     m := &models.FileMetadata{}
     var statsData, errorsData []byte
 
-    // Добавлена колонка is_downloaded в SELECT
     query := `SELECT id, original_name, file_path, status, rows_count, stats, errors, created_at, fingerprint, is_downloaded FROM files WHERE id = $1`
 
     err := r.db.QueryRowContext(ctx, query, id).Scan(
@@ -67,7 +69,7 @@ func (r *pgRepo) GetFileMeta(ctx context.Context, id string) (*models.FileMetada
         &errorsData,
         &m.CreatedAt,
         &m.Fingerprint,
-        &m.IsDownloaded, // Считываем флаг из базы
+        &m.IsDownloaded,
     )
 
     if err != nil {
