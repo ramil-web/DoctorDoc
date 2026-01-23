@@ -1,114 +1,178 @@
 package service
 
 import (
-	"doctordoc/internal/models"
-	"github.com/xuri/excelize/v2"
-	"regexp"
-	"strings"
-	"time"
+    "doctordoc/internal/models"
+    "github.com/xuri/excelize/v2"
+    "log"
+    "regexp"
+    "strings"
+    "time"
+    "unicode"
 )
 
-func (s *fileService) processXLSX(meta *models.FileMetadata, save bool) error {
-	f, err := excelize.OpenFile(meta.FilePath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq models.FixRequest) error {
+    log.Printf("\n[API-LOG] >>> ЗАПУСК ОБРАБОТКИ (Save: %v)", save)
 
-	sheet := f.GetSheetName(0)
-	rows, err := f.GetRows(sheet)
-	if err != nil {
-		return err
-	}
+    f, err := excelize.OpenFile(meta.FilePath)
+    if err != nil {
+       log.Printf("[API-LOG] ❌ Ошибка открытия: %v", err)
+       return err
+    }
+    defer f.Close()
 
-	meta.RowsCount = len(rows)
-	meta.Errors = []models.FileError{}
-	if len(rows) == 0 {
-		return nil
-	}
-	headers := rows[0]
+    sheet := f.GetSheetName(0)
+    rows, err := f.GetRows(sheet)
+    if err != nil {
+       return err
+    }
+    if len(rows) == 0 {
+       return nil
+    }
 
-	reEmail := regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`)
-	rePhone := regexp.MustCompile(`(\+7|7|8)?[\s\-]?\(?[9][0-9]{2}\)?[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}`)
-	reSimpleDate := regexp.MustCompile(`^(\d{2,4})[/-](\d{1,2})[/-](\d{2,4})$`)
+    headers := rows[0]
+    meta.Errors = []models.FileError{}
 
-	for i, row := range rows {
-		if i == 0 { continue }
+    // Регулярки
+    reEmail := regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`)
+    reDigits := regexp.MustCompile(`\D`)
+    reSimpleDate := regexp.MustCompile(`^(\d{2,4})[/-](\d{1,2})[/-](\d{2,4})$`)
 
-		for j, cell := range row {
-			if cell == "" { continue }
+    // Стиль "Текст" для сохранения пробелов и масок
+    textStyle, _ := f.NewStyle(&excelize.Style{NumFmt: 49})
 
-			colName := "НЕИЗВЕСТНО"
-			if j < len(headers) && headers[j] != "" {
-				colName = headers[j]
-			}
+    for i, row := range rows {
+       if i == 0 { continue }
 
-			trimmed := strings.TrimSpace(cell)
-			currentResult := trimmed
-			foundError := false
+       // Проверка выбранных строк
+       isRowSelected := true
+       if len(userReq.SelectedRows) > 0 {
+          isRowSelected = false
+          for _, r := range userReq.SelectedRows {
+             if r == i+1 { isRowSelected = true; break }
+          }
+       }
+       if !isRowSelected { continue }
 
-			// 1. ПОЧТА
-			if strings.Contains(trimmed, "@") && strings.Contains(trimmed, " ") {
-				noSpaces := strings.ReplaceAll(trimmed, " ", "")
-				if reEmail.MatchString(noSpaces) {
-					currentResult = strings.ToLower(noSpaces)
-					foundError = true
-				}
-			}
+       for j, cell := range row {
+          if j >= len(headers) { continue }
+          colName := headers[j]
+          if colName == "" { continue }
 
-			// 2. ТЕЛЕФОН
-			if !foundError && rePhone.MatchString(trimmed) {
-				digits := regexp.MustCompile(`\D`).ReplaceAllString(trimmed, "")
-				if len(digits) >= 10 {
-					formatted := "7" + digits[len(digits)-10:]
-					if formatted != cell {
-						currentResult = formatted
-						foundError = true
-					}
-				}
-			}
+          // ТОТАЛЬНАЯ ОЧИСТКА: убираем неразрывные пробелы и прочий невидимый мусор
+          cleanInput := strings.Map(func(r rune) rune {
+             if unicode.IsSpace(r) { return ' ' }
+             return r
+          }, cell)
+          trimmed := strings.TrimSpace(cleanInput)
 
-			// 3. ДАТА (без времени)
-			if !foundError && !strings.Contains(trimmed, ":") && reSimpleDate.MatchString(trimmed) {
-				norm := regexp.MustCompile(`[/-]`).ReplaceAllString(trimmed, ".")
-				layouts := []string{"02.01.2006", "2006.01.02", "02.01.06"}
-				for _, l := range layouts {
-					if t, err := time.Parse(l, norm); err == nil {
-						currentResult = t.Format("02.01.2006")
-						if currentResult != cell {
-							foundError = true
-						}
-						break
-					}
-				}
-			}
+          currentResult := cell
+          appliedManual := false
+          foundChange := false
 
-			// 4. ПРОБЕЛЫ ПО КРАЯМ
-			if !foundError && cell != trimmed {
-				currentResult = trimmed
-				foundError = true
-			}
+          settings, hasSettings := userReq.Columns[colName]
 
-			// РЕГИСТРАЦИЯ: Визуализация через кавычки " текст "
-			if foundError && currentResult != cell {
-				meta.Errors = append(meta.Errors, models.FileError{
-					Row:         i + 1,
-					Column:      colName,
-					OldValue:    `"` + cell + `"`,
-					NewValue:    `"` + currentResult + `"`,
-					Description: colName,
-				})
+          if !hasSettings {
+             if cell != trimmed {
+                currentResult = trimmed
+                foundChange = true
+             }
+          } else {
+             // 1. РУЧНОЙ ФОРМАТ (Приоритет юзера)
+             if settings.Manual && settings.Format != "" {
+                if strings.Contains(settings.Format, "X") {
+                   currentResult = formatPhone(cell, settings.Format)
+                } else if strings.Contains(settings.Format, "yyyy") || strings.Contains(settings.Format, "dd") {
+                   currentResult = formatDate(cell, settings.Format)
+                } else if strings.Contains(settings.Format, "234") || settings.Format == "int" {
+                   currentResult = formatNumber(cell, settings.Format)
+                }
+                if currentResult != cell {
+                   appliedManual = true
+                   foundChange = true
+                }
+             }
 
-				if save {
-					cellAddr, _ := excelize.CoordinatesToCellName(j+1, i+1)
-					f.SetCellValue(sheet, cellAddr, currentResult)
-				}
-			}
-		}
-	}
+             // 2. АВТО-ФОРМАТ
+             if settings.Auto && !appliedManual && cell != "" {
+                cleanDigits := reDigits.ReplaceAllString(trimmed, "")
 
-	if save {
-		return f.Save()
-	}
-	return nil
+                // Если это Email
+                if strings.Contains(trimmed, "@") && reEmail.MatchString(strings.ReplaceAll(trimmed, " ", "")) {
+                   res := strings.ToLower(strings.ReplaceAll(trimmed, " ", ""))
+                   if res != cell {
+                      currentResult = res
+                      foundChange = true
+                   }
+                // Если это телефон (ищем именно цифры, игнорируя текст типа "оплата")
+                } else if len(cleanDigits) >= 10 && len(cleanDigits) <= 12 {
+                   res := "7" + cleanDigits[len(cleanDigits)-10:]
+                   if res != cell {
+                      currentResult = res
+                      foundChange = true
+                   }
+                // Если это дата
+                } else if !strings.Contains(trimmed, ":") && reSimpleDate.MatchString(trimmed) {
+                   norm := regexp.MustCompile(`[/-]`).ReplaceAllString(trimmed, ".")
+                   for _, l := range []string{"02.01.2006", "2006.01.02", "02.01.06"} {
+                      if t, err := time.Parse(l, norm); err == nil {
+                         res := t.Format("02.01.2006")
+                         if res != cell {
+                            currentResult = res
+                            foundChange = true
+                         }
+                         break
+                      }
+                   }
+                } else if cell != trimmed {
+                   currentResult = trimmed
+                   foundChange = true
+                }
+             }
+          }
+
+          // 3. ЗАПИСЬ
+          if foundChange {
+             meta.Errors = append(meta.Errors, models.FileError{
+                Row: i + 1, Column: colName, OldValue: cell, NewValue: currentResult, Description: colName,
+             })
+
+             if save {
+                cellAddr, _ := excelize.CoordinatesToCellName(j+1, i+1)
+                // Сброс и жесткая запись строки со стилем ТЕКСТ
+                f.SetCellValue(sheet, cellAddr, nil)
+                f.SetCellStyle(sheet, cellAddr, cellAddr, textStyle)
+                f.SetCellStr(sheet, cellAddr, currentResult)
+                log.Printf("[WRITE-OK] %s: '%s' -> '%s'", cellAddr, cell, currentResult)
+             }
+          }
+       }
+    }
+
+    if save {
+       if err := f.SaveAs(meta.FilePath); err != nil {
+          log.Printf("[API-LOG] ❌ Ошибка: %v", err)
+          return err
+       }
+       log.Printf("[API-LOG] ✅ ФАЙЛ ПЕРЕЗАПИСАН: %s", meta.FilePath)
+    }
+    return nil
+}
+
+func formatPhone(val, mask string) string {
+    digits := regexp.MustCompile(`\D`).ReplaceAllString(val, "")
+    if len(digits) < 10 {
+       return val
+    }
+    d := digits[len(digits)-10:]
+    res := ""
+    dIdx := 0
+    for _, char := range mask {
+       if char == 'X' && dIdx < len(d) {
+          res += string(d[dIdx])
+          dIdx++
+       } else if char != 'X' {
+          res += string(char)
+       }
+    }
+    return res
 }

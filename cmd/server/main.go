@@ -105,6 +105,7 @@ func main() {
 
           r.Post("/upload", fileHandler.Upload)
           r.Post("/fix", fileHandler.Fix)
+          r.Post("/preview", fileHandler.Preview)
        })
 
        r.Get("/status/{id}", fileHandler.GetStatus)

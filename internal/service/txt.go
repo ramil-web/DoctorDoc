@@ -1,90 +1,67 @@
 package service
 
 import (
-	"doctordoc/internal/models"
-	"os"
-	"regexp"
-	"strings"
-	"time"
+    "doctordoc/internal/models"
+    "os"
+    "strings"
+    "sync"
 )
 
-func (s *fileService) processTXT(meta *models.FileMetadata, save bool) error {
-	content, err := os.ReadFile(meta.FilePath)
-	if err != nil {
-		return err
-	}
+func (s *fileService) processTXT(meta *models.FileMetadata, save bool, userReq models.FixRequest) error {
+    content, err := os.ReadFile(meta.FilePath)
+    if err != nil { return err }
+    lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
+    var wg sync.WaitGroup
+    var mu sync.Mutex
 
-	rawContent := string(content)
-	rawContent = strings.ReplaceAll(rawContent, "\r\n", "\n")
-	lines := strings.Split(rawContent, "\n")
+    // Настройки для TXT берем по ключу "ТЕКСТ"
+    settings, hasSettings := userReq.Columns["ТЕКСТ"]
 
-	meta.Errors = []models.FileError{}
-	meta.RowsCount = len(lines)
+    for i, line := range lines {
+       if line == "" { continue }
 
-	reEmail := regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`)
-	rePhone := regexp.MustCompile(`(\+7|7|8)?[\s\-]?\(?[9][0-9]{2}\)?[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}`)
-	reSimpleDate := regexp.MustCompile(`(\d{2,4})[/-](\d{1,2})[/-](\d{2,4})`)
+       // Проверка выбранных строк
+       isRowSelected := true
+       if len(userReq.SelectedRows) > 0 {
+          isRowSelected = false
+          for _, r := range userReq.SelectedRows {
+             if r == i+1 { isRowSelected = true; break }
+          }
+       }
+       if !isRowSelected { continue }
 
-	for i, line := range lines {
-		if line == "" { continue }
+       wg.Add(1)
+       go func(idx int, rawLine string) {
+          defer wg.Done()
+          if !hasSettings { return }
 
-		trimmedLine := strings.TrimSpace(line)
-		currentResult := trimmedLine
-		foundError := false
+          res := strings.TrimSpace(rawLine); changed := false
 
-		// 1. Почта
-		currentResult = reEmail.ReplaceAllStringFunc(currentResult, func(m string) string {
-			res := strings.ToLower(m)
-			if res != m { foundError = true }
-			return res
-		})
+          // РУЧНОЙ ФОРМАТ
+          if settings.Manual && settings.Format != "" {
+             if strings.Contains(settings.Format, "X") {
+                res = formatPhone(rawLine, settings.Format); changed = true
+             } else if strings.Contains(settings.Format, "yyyy") || strings.Contains(settings.Format, "dd") {
+                res = formatDate(rawLine, settings.Format); changed = true
+             }
+          }
 
-		// 2. Телефоны
-		currentResult = rePhone.ReplaceAllStringFunc(currentResult, func(m string) string {
-			digits := regexp.MustCompile(`\D`).ReplaceAllString(m, "")
-			if len(digits) >= 10 {
-				res := "7" + digits[len(digits)-10:]
-				if res != m { foundError = true }
-				return res
-			}
-			return m
-		})
+          // АВТО-ПРАВКА (если ручной не сработал)
+          if !changed && settings.Auto {
+             if rawLine != strings.TrimSpace(rawLine) {
+                res = strings.TrimSpace(rawLine); changed = true
+             }
+          }
 
-		// 3. Даты
-		currentResult = reSimpleDate.ReplaceAllStringFunc(currentResult, func(m string) string {
-			if strings.Contains(m, ":") { return m }
-			norm := regexp.MustCompile(`[/-]`).ReplaceAllString(m, ".")
-			layouts := []string{"02.01.2006", "2006.01.02", "02.01.06"}
-			for _, l := range layouts {
-				if t, err := time.Parse(l, norm); err == nil {
-					res := t.Format("02.01.2006")
-					if res != m { foundError = true }
-					return res
-				}
-			}
-			return m
-		})
-
-		// 4. Пробелы (сравнение оригинала и trimmed)
-		isTrimmed := (line != trimmedLine)
-
-		if foundError || isTrimmed {
-			meta.Errors = append(meta.Errors, models.FileError{
-				Row:         i + 1,
-				Column:      "СТРОКА",
-				OldValue:    `"` + line + `"`,
-				NewValue:    `"` + currentResult + `"`,
-				Description: "ТЕКСТОВЫЕ ДАННЫЕ",
-			})
-
-			if save {
-				lines[i] = currentResult
-			}
-		}
-	}
-
-	if save {
-		return os.WriteFile(meta.FilePath, []byte(strings.Join(lines, "\n")), 0644)
-	}
-	return nil
+          if changed || rawLine != strings.TrimSpace(rawLine) {
+             mu.Lock()
+             meta.Errors = append(meta.Errors, models.FileError{Row: idx + 1, Column: "ТЕКСТ", OldValue: rawLine, NewValue: res, Description: "ТЕКСТ"})
+             if save { lines[idx] = res }
+             mu.Unlock()
+          }
+       }(i, line)
+    }
+    wg.Wait()
+    if save { os.WriteFile(meta.FilePath, []byte(strings.Join(lines, "\n")), 0644) }
+    return nil
 }

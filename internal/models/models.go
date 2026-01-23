@@ -40,12 +40,18 @@ type License struct {
 	IsActive    bool      `json:"is_active"`
 }
 
+
+type ColumnSettings struct {
+    Auto   bool   `json:"auto"`
+    Manual bool   `json:"manual"`
+    Format string `json:"format"`
+}
+
 type FixRequest struct {
-    ID            string   `json:"id"`
-    LicenseNumber string   `json:"license_number"`
-    CustomColumn  string   `json:"custom_column"`
-    CustomFormat  string   `json:"custom_format"`
-    SelectedRows  []int    `json:"selected_rows"`
+    ID            string                    `json:"id"`
+    LicenseNumber string                    `json:"license_number"`
+    Columns       map[string]ColumnSettings `json:"columns"`
+    SelectedRows  []int                     `json:"selected_rows"`
 }
 
 type Subscription struct {
