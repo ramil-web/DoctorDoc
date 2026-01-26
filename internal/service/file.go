@@ -72,6 +72,11 @@ func (s *fileService) StartWorker(ctx context.Context) {
              default: s.processCSV(meta, false, analyzeReq)
              }
 
+             // Если ошибок нет, гарантируем что Errors это пустой слайс, а не nil для фронтенда
+             if meta.Errors == nil {
+                 meta.Errors = []models.FileError{}
+             }
+
              meta.Status = "analyzed"
              s.repo.SaveFileMeta(ctx, *meta)
              log.Printf("✅ Файл %s проанализирован. Найдено ошибок: %d", fileID, len(meta.Errors))
@@ -83,7 +88,7 @@ func (s *fileService) StartWorker(ctx context.Context) {
 func (s *fileService) ProcessFile(ctx context.Context, name string, content []byte, _ string) (string, error) {
     id := uuid.New().String(); path := filepath.Join("./uploads", id+filepath.Ext(name))
     _ = os.MkdirAll("./uploads", 0755); _ = os.WriteFile(path, content, 0644)
-    meta := models.FileMetadata{ID: id, OriginalName: name, FilePath: path, Status: "uploaded", CreatedAt: time.Now()}
+    meta := models.FileMetadata{ID: id, OriginalName: name, FilePath: path, Status: "uploaded", CreatedAt: time.Now(), Errors: []models.FileError{}}
     s.repo.SaveFileMeta(ctx, meta); s.rdb.LPush(ctx, "file_processing_queue", id)
     return id, nil
 }
@@ -104,6 +109,8 @@ func (s *fileService) PreviewFile(ctx context.Context, req models.FixRequest) ([
     case ".txt":  s.processTXT(meta, false, req)
     default:      s.processCSV(meta, false, req)
     }
+
+    if meta.Errors == nil { meta.Errors = []models.FileError{} }
 
     log.Printf("[API/Preview] ✅ Done. Returning %d errors", len(meta.Errors))
     return meta.Errors, nil
@@ -126,7 +133,9 @@ func (s *fileService) FixFile(ctx context.Context, req models.FixRequest) error 
 func (s *fileService) GetStatus(id string) (string, []models.FileError, error) {
     meta, err := s.repo.GetFileMeta(context.Background(), id)
     if err != nil { return "error", nil, err }
-    return meta.Status, meta.Errors, nil
+    errs := meta.Errors
+    if errs == nil { errs = []models.FileError{} }
+    return meta.Status, errs, nil
 }
 
 func (s *fileService) GetFileMeta(ctx context.Context, id string) (models.FileMetadata, error) {
