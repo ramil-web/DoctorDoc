@@ -135,7 +135,7 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
                    manualRes = formatNumber(cell, settings.Format)
                 }
 
-                if manualRes != "" && manualRes != cell {
+                if manualRes != "" {
                    currentResult = manualRes
                    foundChange = true
                    wasManual = true
