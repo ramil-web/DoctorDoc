@@ -4,11 +4,13 @@ import "time"
 
 // FileError описывает конкретное исправление в ячейке
 type FileError struct {
-	Row         int    `json:"row"`
-	Column      string `json:"column"`
-	OldValue    string `json:"old_value"`
-	NewValue    string `json:"new_value"`
-	Description string `json:"description"`
+    Row         int    `json:"row"`
+    Column      string `json:"column"`
+    ExcelColumn string `json:"excel_column"`
+    OldValue    string `json:"old_value"`
+    NewValue    string `json:"new_value"`
+    Description string `json:"description"`
+    HandFormat  bool   `json:"handFormat"`
 }
 
 // ProcessingStats хранит итоговые цифры для дашборда
