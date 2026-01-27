@@ -64,6 +64,17 @@ func formatNumber(val, mask string) string {
         return ""
     }
 
+    // Запоминаем оригинальный символ валюты из ячейки
+    origCurrency := ""
+    valLower := strings.ToLower(val)
+    if strings.Contains(valLower, " руб") {
+        origCurrency = " руб"
+    } else if strings.Contains(valLower, " р") {
+        origCurrency = " р."
+    } else if strings.Contains(val, "₽") {
+        origCurrency = " ₽"
+    }
+
     reNum := regexp.MustCompile(`[0-9.,-]+`)
     numStr := reNum.FindString(val)
     if numStr == "" {
@@ -76,7 +87,6 @@ func formatNumber(val, mask string) string {
         return val
     }
 
-    // ИСПРАВЛЕНО: Копейки ТОЛЬКО если маска содержит явные признаки дробной части
     precision := 0
     needsPrecision := strings.Contains(mask, ".00") ||
                       strings.Contains(mask, ",00") ||
@@ -87,7 +97,6 @@ func formatNumber(val, mask string) string {
     if needsPrecision {
         precision = 2
     }
-    log.Printf("[DEBUG/Num] Вход: %s, Маска: %s, Копейки нужны: %v", val, mask, needsPrecision)
 
     thousandSep := ""
     if strings.Contains(mask, " ") || strings.Contains(mask, "X X") || mask == "" {
@@ -121,12 +130,14 @@ func formatNumber(val, mask string) string {
     }
 
     if mask != "" && strings.Contains(mask, "X") {
-        // Заменяем блок иксов на число, но НЕ трогаем копейки если маска их не просила
+        // Если в маске есть X, заменяем блок иксов на число.
+        // Символы руб/р/₽ возьмутся из самой маски (например "XXXX руб")
         reX := regexp.MustCompile(`X[X\s,.]*X|X`)
         result = reX.ReplaceAllString(mask, result)
-    } else if strings.Contains(strings.ToLower(val), "руб") || strings.Contains(val, "₽") || strings.Contains(strings.ToLower(mask), "руб") {
-        if !strings.Contains(result, "руб") && !strings.Contains(result, "₽") {
-            result = result + " руб"
+    } else if origCurrency != "" {
+        // Если маски нет, но в оригинале была валюта — возвращаем её как было
+        if !strings.Contains(result, strings.TrimSpace(origCurrency)) {
+            result = result + origCurrency
         }
     }
 
@@ -183,7 +194,7 @@ func formatPhone(val, mask string) string {
     // Находим место, где начинаются иксы для хвоста
     // Мы игнорируем префикс маски, если он уже есть (7, 8 или +7)
 
-    // Чтобы не дублировать префикс, если он зашит в маску как не-X:
+    // Чтобы не дублировать префикс, если он зашит в маске как не-X:
     for _, char := range mask {
        if char == 'X' {
           if digitIdx < len(pure) {

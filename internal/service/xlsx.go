@@ -115,7 +115,8 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
 
                 isDate := strings.ContainsAny(fLower, "ymd")
                 isCurrency := strings.ContainsAny(fLower, "₽$€¥") ||
-                   regexp.MustCompile(`(?i)(руб|р\.|\bрубл[яьей]\b)`).MatchString(fLower)
+                   regexp.MustCompile(`(?i)(руб\.?|\bрубл[яьей]\b|р\.)`).MatchString(fLower)
+
 
                 isNumericMask := regexp.MustCompile(`^[0-9+\-() ]+$`).MatchString(settings.Format)
 
