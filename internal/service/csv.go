@@ -1,184 +1,276 @@
 package service
 
 import (
-    "doctordoc/internal/models"
-    "encoding/csv"
-    "log"
-    "os"
-    "regexp"
-    "strings"
-    "sync"
-    "time"
+	"doctordoc/internal/models"
+	"encoding/csv"
+	"fmt"
+	"log"
+	"os"
+	"regexp"
+	"strings"
+	"sync"
+	"unicode"
 )
 
 func (s *fileService) processCSV(meta *models.FileMetadata, save bool, userReq models.FixRequest) error {
-    log.Printf("\n[API-LOG] >>> ЗАПУСК ОБРАБОТКИ CSV (Save: %v)", save)
+	log.Printf("\n[API-LOG] >>> СТАРТ ОБРАБОТКИ CSV. Файл: %s, Save: %v", meta.FilePath, save)
+	log.Printf("[API-LOG] 📥 ПОЛУЧЕНО ОТ ФРОНТЕНДА (userReq): %+v", userReq)
 
-    content, err := os.ReadFile(meta.FilePath)
-    if err != nil {
-       return err
-    }
+	content, err := os.ReadFile(meta.FilePath)
+	if err != nil {
+		log.Printf("[API-LOG] ❌ Ошибка чтения файла: %v", err)
+		return err
+	}
 
-    raw := string(content)
-    sep := ';'
-    if strings.Count(raw, ",") > strings.Count(raw, ";") {
-       sep = ','
-    }
+	raw := string(content)
+	sep := ';'
+	if strings.Count(raw, ",") > strings.Count(raw, ";") {
+		sep = ','
+	}
 
-    reader := csv.NewReader(strings.NewReader(raw))
-    reader.Comma = sep
-    reader.LazyQuotes = true
-    reader.TrimLeadingSpace = false // Ставим false, чтобы вручную контролировать пробелы
+	reader := csv.NewReader(strings.NewReader(raw))
+	reader.Comma = sep
+	reader.LazyQuotes = true
+	reader.TrimLeadingSpace = false
 
-    records, err := reader.ReadAll()
-    if err != nil || len(records) == 0 {
-       return err
-    }
+	records, err := reader.ReadAll()
+	if err != nil || len(records) == 0 {
+		log.Printf("[API-LOG] ❌ Ошибка парсинга CSV: %v", err)
+		return err
+	}
 
-    headers := make([]string, len(records[0]))
-    for i, h := range records[0] {
-       headers[i] = strings.TrimSpace(h)
-    }
+	headers := records[0]
+	log.Printf("[API-LOG] 📋 Заголовки в CSV: %v", headers)
 
-    meta.Errors = []models.FileError{}
+	meta.Errors = []models.FileError{}
+	for _, h := range headers {
+		meta.Errors = append(meta.Errors, models.FileError{
+			Row:         0,
+			Column:      h,
+			Description: h,
+		})
+	}
 
-    reEmail := regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`)
-    reDigits := regexp.MustCompile(`\D`)
-    reDateLike := regexp.MustCompile(`(\d{1,4})[./\s,\\\-_](\d{1,2})[./\s,\\\-_](\d{2,4})`)
-    reSpaces := regexp.MustCompile(`\s+`)
+	if len(userReq.Columns) == 0 {
+		log.Printf("[API-LOG] 📥 Настройки пусты. Авто-инициализация...")
+		userReq.Columns = make(map[string]models.ColumnSettings)
+		for _, h := range headers {
+			userReq.Columns[h] = models.ColumnSettings{Auto: true}
+		}
+	}
 
-    selectedMap := make(map[int]bool)
-    for _, r := range userReq.SelectedRows {
-       selectedMap[r] = true
-    }
+	colSettingsByIndex := make(map[int]models.ColumnSettings)
+	for j, hName := range headers {
+		hClean := strings.ToLower(strings.TrimSpace(hName))
+		for reqColKey, settings := range userReq.Columns {
+			reqClean := strings.ToLower(strings.TrimSpace(reqColKey))
+			if reqClean == hClean || reqClean == fmt.Sprintf("%d", j) {
+				colSettingsByIndex[j] = settings
+				log.Printf("[API-LOG] ✅ CSV СВЯЗКА: Колонка %d (%s) <---> Правило '%s'", j, hName, reqColKey)
+			}
+		}
+	}
 
-    var wg sync.WaitGroup
-    var mu sync.Mutex
-    semaphore := make(chan struct{}, 100)
+	reEmail := regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`)
+	reDigits := regexp.MustCompile(`\d`)
+	reOnlyDigits := regexp.MustCompile(`\D`)
+	reHasLetters := regexp.MustCompile(`(?i)[a-zа-яё]`)
+	rePotentialPrice := regexp.MustCompile(`(?i)(\d+[\s.,]?\d*\s?(руб|р\.|\bрубл[яьей]\b|₽|\$|€|¥))`)
+	reSimpleDate := regexp.MustCompile(`^(\d{1,4})[.,/\- ](\d{1,2})[.,/\- ](\d{1,4})`)
 
-    for i := 1; i < len(records); i++ {
-       if len(selectedMap) > 0 && !selectedMap[i+1] {
-          continue
-       }
+	selectedMap := make(map[int]bool)
+	for _, r := range userReq.SelectedRows {
+		selectedMap[r] = true
+	}
 
-       wg.Add(1)
-       semaphore <- struct{}{}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	semaphore := make(chan struct{}, 50)
 
-       go func(idx int) {
-          defer wg.Done()
-          defer func() { <-semaphore }()
+	for i := 1; i < len(records); i++ {
+		if len(selectedMap) > 0 && !selectedMap[i+1] {
+			continue
+		}
 
-          row := records[idx]
+		wg.Add(1)
+		semaphore <- struct{}{}
 
-          for j, cell := range row {
-             if j >= len(headers) { continue }
-             colName := headers[j]
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { <-semaphore }()
 
-             currentResult := cell
-             foundChange := false
-             settings, hasSettings := userReq.Columns[colName]
+			row := records[idx]
+			for j, cell := range row {
+				if j >= len(headers) {
+					continue
+				}
 
-             trimmed := strings.TrimSpace(cell)
-             normalizedSpaces := reSpaces.ReplaceAllString(trimmed, " ")
+				rawColName := headers[j]
+				settings, hasSettings := colSettingsByIndex[j]
 
-             // 1. ЛОГИКА ОБРАБОТКИ
-             if hasSettings && settings.Manual && settings.Format != "" {
-                var resManual string
-                if strings.Contains(settings.Format, "X") || strings.Contains(colName, "телефон") {
-                   resManual = formatPhone(cell, settings.Format)
-                } else if strings.Contains(settings.Format, "yyyy") || strings.Contains(settings.Format, "dd") {
-                   resManual = formatDate(cell, settings.Format)
-                } else if strings.Contains(settings.Format, "234") || settings.Format == "int" {
-                   resManual = formatNumber(cell, settings.Format)
-                }
-                if resManual != "" && resManual != cell {
-                   currentResult = resManual
-                   foundChange = true
-                }
-             } else if !hasSettings || settings.Auto {
-                if normalizedSpaces != "" {
-                   noSpaces := strings.ReplaceAll(normalizedSpaces, " ", "")
+				cleanInput := strings.Map(func(r rune) rune {
+					if unicode.IsSpace(r) {
+						return ' '
+					}
+					return r
+				}, cell)
+				trimmed := strings.TrimSpace(cleanInput)
 
-                   // Дата
-                   if match := reDateLike.FindStringSubmatch(normalizedSpaces); match != nil && !strings.Contains(normalizedSpaces, "@") {
-                      d, m, y := match[1], match[2], match[3]
-                      if len(d) == 1 { d = "0" + d }
-                      if len(m) == 1 { m = "0" + m }
-                      if len(y) == 2 { y = "20" + y }
-                      normDate := d + "." + m + "." + y
-                      if t, err := time.Parse("02.01.2006", normDate); err == nil {
-                         res := t.Format("02.01.2006")
-                         if res != cell { currentResult = res; foundChange = true }
-                      }
-                   }
+				log.Printf(
+					"[CSV][CELL] row=%d col=%d (%s) raw='%s' trimmed='%s' settings=%+v",
+					idx+1, j, rawColName, cell, trimmed, settings,
+				)
 
-                   // Почта
-                   if !foundChange && strings.Contains(noSpaces, "@") && reEmail.MatchString(noSpaces) {
-                      res := strings.ToLower(noSpaces)
-                      if res != cell { currentResult = res; foundChange = true }
-                   }
+				currentResult := cell
+				foundChange := false
+				wasManual := false
 
-                   // Телефон
-                   if !foundChange {
-                      cd := reDigits.ReplaceAllString(normalizedSpaces, "")
-                      if len(cd) >= 10 && len(cd) <= 12 {
-                         mask := "7XXXXXXXXXX"
-                         if hasSettings && settings.Format != "" { mask = settings.Format }
-                         res := formatPhone(normalizedSpaces, mask)
-                         if res != cell { currentResult = res; foundChange = true }
-                      }
-                   }
+				if !hasSettings {
+					if cell != trimmed {
+						currentResult = trimmed
+						foundChange = true
+					}
+				} else {
+					if settings.Manual && settings.Format != "" {
+						fLower := strings.ToLower(settings.Format)
+						var manualRes string
 
-                   // Цена
-                   if !foundChange {
-                      if regexp.MustCompile(`\d`).MatchString(normalizedSpaces) && (strings.Contains(normalizedSpaces, "руб") || strings.Contains(normalizedSpaces, ",")) {
-                         res := formatNumber(normalizedSpaces, "")
-                         if res != "" && res != cell { currentResult = res; foundChange = true }
-                      }
-                   }
+						log.Printf("[CSV][MANUAL] col=%s format='%s'", rawColName, settings.Format)
 
-                   if !foundChange && normalizedSpaces != cell {
-                      currentResult = normalizedSpaces
-                      foundChange = true
-                   }
-                } else if cell != "" {
-                   currentResult = ""
-                   foundChange = true
-                }
-             }
+						isDate := strings.ContainsAny(fLower, "ymd")
+						isCurrency := strings.ContainsAny(fLower, "₽$€¥") ||
+							regexp.MustCompile(`(?i)(руб\.?|\bрубл[яьей]\b|р\.)`).MatchString(fLower)
+						isNumericMask := regexp.MustCompile(`^[0-9+\-() ]+$`).MatchString(settings.Format)
 
-             // 2. ЗАПИСЬ И ЛОГИРОВАНИЕ
-             if foundChange {
-                // В логах используем елочки для наглядности пробелов
-                log.Printf("[CSV/FIX] Row: %d | Col: %s | «%s» -> «%s»", idx+1, colName, cell, currentResult)
+						if (strings.Contains(fLower, "x") || isNumericMask) && !isDate {
+							if isCurrency || strings.ContainsAny(fLower, ".,") || strings.Contains(fLower, "x x") {
+								manualRes = formatNumber(cell, settings.Format)
+							} else {
+								if len(reOnlyDigits.ReplaceAllString(fLower, "")) == 0 && len(fLower) <= 6 && !strings.ContainsAny(fLower, "+()-") {
+									manualRes = reOnlyDigits.ReplaceAllString(trimmed, "")
+								} else {
+									manualRes = formatPhone(cell, settings.Format)
+								}
+							}
+						} else if isDate {
+							manualRes = formatDate(cell, settings.Format)
+						} else if strings.Contains(fLower, "int") || strings.Contains(fLower, "234") {
+							manualRes = formatNumber(cell, settings.Format)
+						}
 
-                mu.Lock()
-                meta.Errors = append(meta.Errors, models.FileError{
-                   Row:         idx + 1,
-                   Column:      colName,
-                   OldValue:    cell,
-                   NewValue:    currentResult,
-                   Description: colName,
-                })
-                if save {
-                   records[idx][j] = currentResult
-                }
-                mu.Unlock()
-             }
-          }
-       }(i)
-    }
+						log.Printf("[CSV][MANUAL][RESULT] before='%s' after='%s'", cell, manualRes)
 
-    wg.Wait()
+						// 🔥 ФИКС — как в XLSX
+						if manualRes != "" {
+							currentResult = manualRes
+							foundChange = true
+							wasManual = true
+						}
+					}
 
-    if save {
-       f, err := os.Create(meta.FilePath)
-       if err != nil { return err }
-       defer f.Close()
-       w := csv.NewWriter(f)
-       w.Comma = sep
-       w.WriteAll(records)
-       log.Printf("[API-LOG] ✅ ФАЙЛ ПЕРЕЗАПИСАН")
-    }
-    return nil
+					if settings.Auto && !foundChange && cell != "" {
+						cleanDigits := reOnlyDigits.ReplaceAllString(trimmed, "")
+
+						if strings.Contains(trimmed, "@") && reEmail.MatchString(strings.ReplaceAll(trimmed, " ", "")) {
+							res := strings.ToLower(strings.ReplaceAll(trimmed, " ", ""))
+							if res != cell {
+								currentResult = res
+								foundChange = true
+							}
+						}
+
+						if !foundChange && len(cleanDigits) >= 10 && len(cleanDigits) <= 12 && !reHasLetters.MatchString(trimmed) {
+							mask := "7XXXXXXXXXX"
+							if settings.Format != "" {
+								mask = settings.Format
+							}
+
+							log.Printf(
+								"[CSV][AUTO][PHONE] val='%s' digits='%s' mask='%s'",
+								trimmed, cleanDigits, mask,
+							)
+
+							res := formatPhone(trimmed, mask)
+
+							log.Printf(
+								"[CSV][AUTO][PHONE][RESULT] before='%s' after='%s'",
+								cell, res,
+							)
+
+							if res != cell {
+								currentResult = res
+								foundChange = true
+							}
+						}
+
+						if !foundChange && !strings.Contains(trimmed, ":") && reSimpleDate.MatchString(trimmed) {
+							res := formatDate(trimmed, settings.Format)
+							if res != "" && res != cell {
+								currentResult = res
+								foundChange = true
+							}
+						}
+
+						if !foundChange && rePotentialPrice.MatchString(trimmed) && reDigits.MatchString(trimmed) {
+							res := formatNumber(trimmed, settings.Format)
+							if res != cell && res != "" {
+								currentResult = res
+								foundChange = true
+							}
+						}
+
+						if !foundChange && cell != trimmed {
+							currentResult = trimmed
+							foundChange = true
+						}
+					}
+				}
+
+				if foundChange {
+					mu.Lock()
+					hasStartSpace := len(cell) > 0 && unicode.IsSpace(rune(cell[0]))
+					hasEndSpace := len(cell) > 0 && unicode.IsSpace(rune(cell[len(cell)-1]))
+					pre := ""
+					if hasStartSpace {
+						pre = "\u00A0"
+					}
+					suf := ""
+					if hasEndSpace {
+						suf = "\u00A0"
+					}
+
+					meta.Errors = append(meta.Errors, models.FileError{
+						Row:         idx + 1,
+						Column:      rawColName,
+						OldValue:    fmt.Sprintf("'%s%s%s'", pre, cell, suf),
+						NewValue:    fmt.Sprintf("'%s'", currentResult),
+						Description: rawColName,
+						HandFormat:  wasManual,
+					})
+
+					if save {
+						records[idx][j] = currentResult
+					}
+					mu.Unlock()
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	if save {
+		f, err := os.Create(meta.FilePath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		w := csv.NewWriter(f)
+		w.Comma = sep
+		w.WriteAll(records)
+		log.Printf("[API-LOG] ✅ CSV ПЕРЕЗАПИСАН")
+	}
+
+	log.Printf("[API-LOG] <<< ОБРАБОТКА CSV ЗАВЕРШЕНА. Найдено правок: %d", len(meta.Errors))
+	return nil
 }
