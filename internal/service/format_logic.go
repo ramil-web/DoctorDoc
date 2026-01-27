@@ -76,18 +76,18 @@ func formatNumber(val, mask string) string {
         return val
     }
 
-    // ЛОГИКА КОПЕЕК: Только если маска явно просит .00 ,00 или XX
+    // ИСПРАВЛЕНО: Копейки ТОЛЬКО если маска содержит явные признаки дробной части
     precision := 0
-    needsPrecision := strings.Contains(mask, "XX") ||
-                      strings.Contains(mask, ".00") ||
+    needsPrecision := strings.Contains(mask, ".00") ||
                       strings.Contains(mask, ",00") ||
                       strings.Contains(mask, ",XX") ||
+                      strings.Contains(mask, ".XX") ||
                       strings.Contains(mask, ",56")
 
     if needsPrecision {
         precision = 2
     }
-    log.Printf("[DEBUG/Num] Вход: %s, Маска: %s, Нужно копеек: %v", val, mask, needsPrecision)
+    log.Printf("[DEBUG/Num] Вход: %s, Маска: %s, Копейки нужны: %v", val, mask, needsPrecision)
 
     thousandSep := ""
     if strings.Contains(mask, " ") || strings.Contains(mask, "X X") || mask == "" {
@@ -120,8 +120,8 @@ func formatNumber(val, mask string) string {
         result += decimalSep + parts[1]
     }
 
-    // Применяем маску как обертку, если есть X
     if mask != "" && strings.Contains(mask, "X") {
+        // Заменяем блок иксов на число, но НЕ трогаем копейки если маска их не просила
         reX := regexp.MustCompile(`X[X\s,.]*X|X`)
         result = reX.ReplaceAllString(mask, result)
     } else if strings.Contains(strings.ToLower(val), "руб") || strings.Contains(val, "₽") || strings.Contains(strings.ToLower(mask), "руб") {
@@ -147,31 +147,29 @@ func formatPhone(val, mask string) string {
        return val
     }
 
+    // Берём последние 10 цифр (хвост)
     pure := digits[len(digits)-10:]
     log.Printf("[DEBUG/Phone] Вход: %s, Маска: %s, Хвост: %s", val, mask, pure)
 
-    // ОПРЕДЕЛЯЕМ ПРЕФИКС: жестко смотрим на начало маски
-    currentPrefix := "7"
-    if strings.HasPrefix(mask, "8") {
-        currentPrefix = "8"
-    } else if strings.HasPrefix(mask, "+7") {
+    // ИСПРАВЛЕНО: Жёсткое определение префикса из начала маски
+    currentPrefix := ""
+    if strings.HasPrefix(mask, "+7") {
         currentPrefix = "+7"
+    } else if strings.HasPrefix(mask, "8") {
+        currentPrefix = "8"
     } else if strings.HasPrefix(mask, "7") {
+        currentPrefix = "7"
+    } else {
+        // Если в маске нет префикса, по дефолту 7
         currentPrefix = "7"
     }
 
     log.Printf("[DEBUG/Phone] Выбран префикс: %s", currentPrefix)
 
-    // Авто-красота, если маска без X, но длинная
+    // Если маска без иксов (просто 79991112233), делаем её шаблоном
     if !strings.Contains(mask, "X") && len(re.ReplaceAllString(mask, "")) >= 10 {
-        if currentPrefix == "8" {
-            mask = "8 (XXX) XXX-XX-XX"
-        } else if currentPrefix == "+7" {
-            mask = "+7 (XXX) XXX-XX-XX"
-        } else {
-            mask = "7 (XXX) XXX-XX-XX"
-        }
-        log.Printf("[DEBUG/Phone] Маска преобразована в шаблон: %s", mask)
+        mask = currentPrefix + " (XXX) XXX-XX-XX"
+        log.Printf("[DEBUG/Phone] Маска стала шаблоном: %s", mask)
     }
 
     if !strings.Contains(mask, "X") {
@@ -182,6 +180,10 @@ func formatPhone(val, mask string) string {
 
     result := ""
     digitIdx := 0
+    // Находим место, где начинаются иксы для хвоста
+    // Мы игнорируем префикс маски, если он уже есть (7, 8 или +7)
+
+    // Чтобы не дублировать префикс, если он зашит в маску как не-X:
     for _, char := range mask {
        if char == 'X' {
           if digitIdx < len(pure) {

@@ -109,7 +109,6 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
                 foundChange = true
              }
           } else {
-             // 1. РУЧНОЕ ФОРМАТИРОВАНИЕ
              if settings.Manual && settings.Format != "" {
                 fLower := strings.ToLower(settings.Format)
                 var manualRes string
@@ -143,7 +142,6 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
                 }
              }
 
-             // 2. АВТО ФОРМАТИРОВАНИЕ
              if settings.Auto && !foundChange && cell != "" {
                 cleanDigits := reOnlyDigits.ReplaceAllString(trimmed, "")
 
@@ -155,7 +153,6 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
                    }
                 }
 
-                // PHONE
                 if !foundChange && len(cleanDigits) >= 10 && len(cleanDigits) <= 12 && !reHasLetters.MatchString(trimmed) {
                    mask := "7XXXXXXXXXX"
                    if settings.Format != "" {
@@ -168,7 +165,6 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
                    }
                 }
 
-                // DATE
                 if !foundChange && !strings.Contains(trimmed, ":") && reSimpleDate.MatchString(trimmed) {
                    res := formatDate(trimmed, settings.Format)
                    if res != "" && res != cell {
@@ -177,7 +173,6 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
                    }
                 }
 
-                // PRICE
                 if !foundChange && rePotentialPrice.MatchString(trimmed) && reDigits.MatchString(trimmed) {
                    isSimpleID := !strings.ContainsAny(trimmed, ".,") && len(cleanDigits) <= 6 && !strings.Contains(strings.ToLower(trimmed), "руб")
                    if !isSimpleID {
