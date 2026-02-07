@@ -75,6 +75,7 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
     rePotentialPrice := regexp.MustCompile(`(?i)(\d+[\s.,]?\d*\s?(руб|р\.|\bрубл[яьей]\b|₽|\$|€|¥))`)
     reSimpleDate := regexp.MustCompile(`^(\d{1,4})[.,/\- ](\d{1,2})[.,/\- ](\d{1,4})`)
 
+    // Стиль 49 — это текстовый формат в Excel (пропускает всё как есть)
     textStyle, _ := f.NewStyle(&excelize.Style{NumFmt: 49})
 
     for i, row := range rows {
@@ -82,13 +83,24 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
           continue
        }
 
-       for j, cell := range row {
-          if j >= len(headers) {
-             continue
+       for j := range headers {
+          cell := ""
+          if j < len(row) {
+             cell = row[j]
           }
 
           rawColName := headers[j]
           excelAddr, _ := excelize.CoordinatesToCellName(j+1, i+1)
+
+          // ВАЖНО: Если сохраняем, берем "сырое" значение, чтобы форматтеры не получили
+          // уже обрезанную Экселем строку
+          if save {
+              rawVal, _ := f.GetCellValue(sheet, excelAddr)
+              if rawVal != "" {
+                  cell = rawVal
+              }
+          }
+
           settings, hasSettings := colSettingsByIndex[j]
 
           cleanInput := strings.Map(func(r rune) rune {
@@ -116,7 +128,6 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
                 isDate := strings.ContainsAny(fLower, "ymd")
                 isCurrency := strings.ContainsAny(fLower, "₽$€¥") ||
                    regexp.MustCompile(`(?i)(руб\.?|\bрубл[яьей]\b|р\.)`).MatchString(fLower)
-
 
                 isNumericMask := regexp.MustCompile(`^[0-9+\-() ]+$`).MatchString(settings.Format)
 
@@ -174,7 +185,7 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
                    }
                 }
 
-                if !foundChange && rePotentialPrice.MatchString(trimmed) && reDigits.MatchString(trimmed) {
+                if !foundChange && (rePotentialPrice.MatchString(trimmed) || isCurrencyLike(trimmed)) && reDigits.MatchString(trimmed) {
                    isSimpleID := !strings.ContainsAny(trimmed, ".,") && len(cleanDigits) <= 6 && !strings.Contains(strings.ToLower(trimmed), "руб")
                    if !isSimpleID {
                       res := formatNumber(trimmed, settings.Format)
@@ -208,9 +219,11 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
              })
 
              if save {
-                f.SetCellValue(sheet, excelAddr, nil)
-                f.SetCellStyle(sheet, excelAddr, excelAddr, textStyle)
-                f.SetCellStr(sheet, excelAddr, currentResult)
+                // ПРИНУДИТЕЛЬНО очищаем старые форматы и значения ячейки
+                _ = f.SetCellValue(sheet, excelAddr, nil)
+                _ = f.SetCellStyle(sheet, excelAddr, excelAddr, textStyle)
+                _ = f.SetCellStr(sheet, excelAddr, currentResult)
+                log.Printf("[API-LOG] ✍️ Записано в %s: %s", excelAddr, currentResult)
              }
           }
        }
@@ -226,4 +239,16 @@ func (s *fileService) processXLSX(meta *models.FileMetadata, save bool, userReq 
 
     log.Printf("[API-LOG] <<< ОБРАБОТКА ЗАВЕРШЕНА. Найдено правок: %d", len(meta.Errors))
     return nil
+}
+
+// Вспомогательная проверка на признаки цены
+func isCurrencyLike(s string) bool {
+    s = strings.ToLower(s)
+    marks := []string{"руб", " р.", "₽", "$", "€"}
+    for _, m := range marks {
+        if strings.Contains(s, m) {
+            return true
+        }
+    }
+    return false
 }

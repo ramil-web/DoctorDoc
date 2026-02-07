@@ -20,7 +20,7 @@ func formatDate(val, customMask string) string {
 
     layouts := []string{
        "02.01.2006", "02.01.06", "2006.01.02", "01.02.2006",
-       "02.01.2006 15:04", "2006-01-02", "2.1.2006", "30,01,2023",
+       "02.01.2006 15:04", "2006-01-02", "2.1.2006", "30.01.2023",
     }
 
     var t time.Time
@@ -64,7 +64,6 @@ func formatNumber(val, mask string) string {
         return ""
     }
 
-    // Запоминаем оригинальный символ валюты из ячейки
     origCurrency := ""
     valLower := strings.ToLower(val)
     if strings.Contains(valLower, " руб") {
@@ -130,12 +129,9 @@ func formatNumber(val, mask string) string {
     }
 
     if mask != "" && strings.Contains(mask, "X") {
-        // Если в маске есть X, заменяем блок иксов на число.
-        // Символы руб/р/₽ возьмутся из самой маски (например "XXXX руб")
         reX := regexp.MustCompile(`X[X\s,.]*X|X`)
         result = reX.ReplaceAllString(mask, result)
     } else if origCurrency != "" {
-        // Если маски нет, но в оригинале была валюта — возвращаем её как было
         if !strings.Contains(result, strings.TrimSpace(origCurrency)) {
             result = result + origCurrency
         }
@@ -158,11 +154,9 @@ func formatPhone(val, mask string) string {
        return val
     }
 
-    // Берём последние 10 цифр (хвост)
     pure := digits[len(digits)-10:]
     log.Printf("[DEBUG/Phone] Вход: %s, Маска: %s, Хвост: %s", val, mask, pure)
 
-    // ИСПРАВЛЕНО: Жёсткое определение префикса из начала маски
     currentPrefix := ""
     if strings.HasPrefix(mask, "+7") {
         currentPrefix = "+7"
@@ -171,30 +165,20 @@ func formatPhone(val, mask string) string {
     } else if strings.HasPrefix(mask, "7") {
         currentPrefix = "7"
     } else {
-        // Если в маске нет префикса, по дефолту 7
         currentPrefix = "7"
     }
 
-    log.Printf("[DEBUG/Phone] Выбран префикс: %s", currentPrefix)
-
-    // Если маска без иксов (просто 79991112233), делаем её шаблоном
     if !strings.Contains(mask, "X") && len(re.ReplaceAllString(mask, "")) >= 10 {
         mask = currentPrefix + " (XXX) XXX-XX-XX"
-        log.Printf("[DEBUG/Phone] Маска стала шаблоном: %s", mask)
     }
 
     if !strings.Contains(mask, "X") {
        res := currentPrefix + pure
-       log.Printf("[DEBUG/Phone] Итог (без X): %s", res)
        return res
     }
 
     result := ""
     digitIdx := 0
-    // Находим место, где начинаются иксы для хвоста
-    // Мы игнорируем префикс маски, если он уже есть (7, 8 или +7)
-
-    // Чтобы не дублировать префикс, если он зашит в маске как не-X:
     for _, char := range mask {
        if char == 'X' {
           if digitIdx < len(pure) {
