@@ -19,28 +19,26 @@ func NewTelegramHandler(s service.TelegramService) *TelegramHandler {
 
 func (h *TelegramHandler) SupportHandler(w http.ResponseWriter, r *http.Request) {
 	var req models.SupportRequest
-
 	w.Header().Set("Content-Type", "application/json")
 
+	// Декодируем тело запроса
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("❌ Ошибка декодирования формы поддержки: %v", err)
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Неверный формат данных"})
 		return
 	}
 
-	msg := fmt.Sprintf("🆘 ПОДДЕРЖКА\n\n👤 Имя: %s\n📧 Email: %s\n✈️ TG: %s\n📝 Текст: %s",
-		req.Name, req.Email, req.Telegram, req.Text)
+	// Формируем сообщение
+	msg := fmt.Sprintf(
+		"🆘 <b>НОВАЯ ЗАЯВКА В ПОДДЕРЖКУ</b>\n\n👤 <b>Имя:</b> %s\n📧 <b>Email:</b> %s\n✈️ <b>TG:</b> %s\n📝 <b>Текст:</b> %s",
+		req.Name, req.Email, req.Telegram, req.Text,
+	)
 
-	// Отправляем асинхронно, чтобы не блокировать ответ
+	// Отправляем в Telegram через сервис (токены бота лежат в .env на сервере)
 	go func() {
 		_ = h.svc.SendMessage(msg)
 	}()
 
-	// ВСЕГДА отвечаем успехом клиенту, чтобы не было 500 ошибки
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
-		"status":  "ok",
-		"message": "Ваше сообщение принято",
-	})
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }

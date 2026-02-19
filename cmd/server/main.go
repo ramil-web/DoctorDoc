@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +20,31 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
+
+// ApiKeyMiddleware проверяет наличие и валидность секретного токена в заголовках
+func ApiKeyMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Пропускаем проверку для Preflight-запросов браузера (CORS)
+		if r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Считываем Fingerprint из заголовка
+		fingerprint := r.Header.Get("X-Client-Fingerprint")
+
+		// Если Fingerprint отсутствует, блокируем доступ
+		if fingerprint == "" || fingerprint == "none" {
+			log.Printf("⚠️  Блокировка: запрос без идентификатора (IP: %s)", r.RemoteAddr)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Access denied: Missing Fingerprint"})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
 
 func runMigrations(db *sql.DB) {
 	paths := []string{"migrations/001_init.sql", "backend/migrations/001_init.sql"}
@@ -51,7 +77,6 @@ func main() {
 		_ = godotenv.Load("../../.env")
 	}
 
-	// 1. Подключение к БД с проверкой
 	dbURL := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -63,7 +88,6 @@ func main() {
 
 	runMigrations(db)
 
-	// 2. Подключение к Redis с проверкой
 	rdb := redis.NewClient(&redis.Options{
 		Addr: os.Getenv("REDIS_URL"),
 	})
@@ -84,12 +108,10 @@ func main() {
 	tgHandler := handlers.NewTelegramHandler(tgSvc)
 	authHandler := handlers.NewAuthHandler(fileSvc, subSvc)
 
-	// 3. БЕЗОПАСНЫЙ запуск воркера (защита от паники)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("🔥 КРИТИЧЕСКАЯ ПАНИКА В ВОРКЕРЕ: %v", r)
-				log.Println("🛠 Рекомендуется проверить логику форматирования в service/format_logic.go")
 			}
 		}()
 		log.Println("👷 Воркер запускается...")
@@ -99,7 +121,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer) // Защита для HTTP-запросов
+	r.Use(middleware.Recoverer)
 
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: []string{"*"},
@@ -120,23 +142,32 @@ func main() {
 		MaxAge:           300,
 	}))
 
+	// Группа API v1
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Post("/support", tgHandler.SupportHandler)
-		r.Post("/webhook/yoomoney", subHandler.YoomoneyWebhook)
+           // ВАЖНО: Вебхук ЮMoney выносим ДО ApiKeyMiddleware
+           r.Post("/webhook/yoomoney", subHandler.YoomoneyWebhook)
 
-		r.Group(func(r chi.Router) {
-			r.Use(authHandler.AuthMiddleware)
-			r.Use(authHandler.LimitMiddleware)
+           r.Group(func(r chi.Router) {
+              // Эта проверка теперь применяется ко всему, что ниже
+              r.Use(ApiKeyMiddleware)
 
-			r.Post("/upload", fileHandler.Upload)
-			r.Post("/fix", fileHandler.Fix)
-			r.Post("/preview", fileHandler.Preview)
-		})
+              r.Post("/support", tgHandler.SupportHandler)
+              r.Post("/create-payment", subHandler.CreatePayment)
 
-		r.Get("/status/{id}", fileHandler.GetStatus)
-		r.Get("/download/{id}", fileHandler.Download)
-		r.Get("/check-limit", subHandler.CheckLimit)
-	})
+              r.Group(func(r chi.Router) {
+                 r.Use(authHandler.AuthMiddleware)
+                 r.Use(authHandler.LimitMiddleware)
+
+                 r.Post("/upload", fileHandler.Upload)
+                 r.Post("/fix", fileHandler.Fix)
+                 r.Post("/preview", fileHandler.Preview)
+              })
+
+              r.Get("/status/{id}", fileHandler.GetStatus)
+              r.Get("/download/{id}", fileHandler.Download)
+              r.Get("/check-limit", subHandler.CheckLimit)
+           })
+        })
 
 	port := os.Getenv("PORT")
 	if port == "" {

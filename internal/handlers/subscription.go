@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/sha1"
 	"doctordoc/internal/service"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,10 +17,36 @@ func NewSubscriptionHandler(svc service.SubscriptionService) *SubscriptionHandle
 	return &SubscriptionHandler{svc: svc}
 }
 
+func (h *SubscriptionHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
+	var data struct {
+		Email       string  `json:"email"`
+		PlanID      int     `json:"plan_id"`
+		PlanName    string  `json:"plan_name"`
+		Amount      float64 `json:"amount"`
+		Fingerprint string  `json:"fingerprint"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	wallet := os.Getenv("WALLET_ID")
+	label := fmt.Sprintf("pay_%s_%d_%s", data.Fingerprint, data.PlanID, data.Email)
+
+	paymentURL := fmt.Sprintf(
+		"https://yoomoney.ru/quickpay/confirm.xml?receiver=%s&quickpay-form=button&targets=Оплата+тарифа:+%s&paymentType=AC&sum=%.2f&label=%s&successURL=%s",
+		wallet, data.PlanName, data.Amount, label, os.Getenv("EXTERNAL_API_URL"),
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"url": paymentURL})
+}
+
 func (h *SubscriptionHandler) YoomoneyWebhook(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	sha1Hash := r.FormValue("sha1_hash")
-	label := r.FormValue("label") // Тут наш Email
+	label := r.FormValue("label")
 	amount := r.FormValue("amount")
 
 	rawStr := fmt.Sprintf("%s&%s&%s&%s&%s&%s&%s&%s&%s",
@@ -34,18 +61,12 @@ func (h *SubscriptionHandler) YoomoneyWebhook(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	err := h.svc.ProcessPayment(label, amount)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
+	_ = h.svc.ProcessPayment(label, amount)
 	w.WriteHeader(http.StatusOK)
 }
 
 func (h *SubscriptionHandler) CheckLimit(w http.ResponseWriter, r *http.Request) {
-	// Добавлен r.Context() в качестве первого аргумента
 	allowed, _ := h.svc.IsAccessAllowed(r.Context(), r.RemoteAddr, r.Header.Get("X-Client-Fingerprint"))
-
 	if !allowed {
 		w.WriteHeader(http.StatusForbidden)
 		return
