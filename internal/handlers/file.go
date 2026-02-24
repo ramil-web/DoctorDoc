@@ -67,13 +67,12 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
     defer file.Close()
 
     // fingerprint с фронта игнорируется
-    fp := r.FormValue("fingerprint")
-    _ = fp
+    fp := r.Header.Get("X-Client-Fingerprint")
 
     ip := getRealIP(r)
     fileSizeMB := float64(header.Size) / (1024 * 1024)
 
-    can, err := h.svc.CanUpload(r.Context(), "", ip, fileSizeMB)
+    can, err := h.svc.CanUpload(r.Context(), fp, ip, fileSizeMB)
     if err != nil || !can {
        w.WriteHeader(http.StatusForbidden)
        errMsg := "LIMIT_EXCEEDED"
@@ -90,7 +89,7 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
        return
     }
 
-    id, err := h.svc.ProcessFile(r.Context(), header.Filename, content, "")
+    id, err := h.svc.ProcessFile(r.Context(), header.Filename, content, fp)
     if err != nil {
        http.Error(w, err.Error(), http.StatusInternalServerError)
        return

@@ -33,16 +33,19 @@ func ApiKeyMiddleware(next http.Handler) http.Handler {
 		// Считываем Fingerprint из заголовка
 		fingerprint := r.Header.Get("X-Client-Fingerprint")
 
-		// Если Fingerprint отсутствует, блокируем доступ
-		if fingerprint == "" || fingerprint == "none" {
-			log.Printf("⚠️  Блокировка: запрос без идентификатора (IP: %s)", r.RemoteAddr)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Access denied: Missing Fingerprint"})
-			return
-		}
+		if fingerprint == "" {
+        			fingerprint = r.URL.Query().Get("fp")
+        		}
 
-		next.ServeHTTP(w, r)
+        		if fingerprint == "" || fingerprint == "none" {
+        			log.Printf("⚠️  Блокировка: запрос без идентификатора (IP: %s | URL: %s)", r.RemoteAddr, r.URL.Path)
+        			w.Header().Set("Content-Type", "application/json")
+        			w.WriteHeader(http.StatusForbidden)
+        			json.NewEncoder(w).Encode(map[string]string{"error": "Access denied: Missing Fingerprint"})
+        			return
+        		}
+
+        		next.ServeHTTP(w, r)
 	})
 }
 
@@ -133,11 +136,10 @@ func main() {
 			"Accept-Encoding",
 			"X-CSRF-Token",
 			"Authorization",
-			"X-API-KEY",
 			"X-Client-Fingerprint",
 			"ngrok-skip-browser-warning",
 		},
-		ExposedHeaders:   []string{"Link"},
+		ExposedHeaders: []string{"Content-Disposition", "Link"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
@@ -155,7 +157,6 @@ func main() {
               r.Post("/create-payment", subHandler.CreatePayment)
 
               r.Group(func(r chi.Router) {
-                 r.Use(authHandler.AuthMiddleware)
                  r.Use(authHandler.LimitMiddleware)
 
                  r.Post("/upload", fileHandler.Upload)
