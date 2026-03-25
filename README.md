@@ -31,18 +31,13 @@ docker-compose.yml
 
 ## Быстрый старт
 
-1. Клонирование и переход в папку:
-git clone https://github.com/ramil-web/DoctorDoc.git
-cd DoctorDoc/backend
 
-2. Настройка окружения:
+Настройка окружения:
 Создайте файл .env и заполните свои данные (БД, порты, секреты):
 cp .env.example .env
 
-3. Запуск через Docker:
+Запуск через Docker:
 docker-compose up --build -d
-
-После запуска API будет доступно по адресу: http://localhost:8080
 
 ## Примеры API эндпоинтов
 
