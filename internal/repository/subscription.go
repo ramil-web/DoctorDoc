@@ -57,8 +57,9 @@ func (r *pgRepo) GetDistinctDevicesCount(ctx context.Context, ip string) (int, e
 }
 
 func (r *pgRepo) CreateSubscription(email, plan string, duration time.Duration, code string) error {
-    query := `INSERT INTO subscriptions (email, plan_type, status, expires_at, access_code)
-              VALUES ($1, $2, 'active', $3, $4) ON CONFLICT (email) DO UPDATE SET expires_at = $3`
+    // ИСПРАВЛЕНО: access_code -> license_key
+    query := `INSERT INTO subscriptions (email, plan_type, status, expires_at, license_key)
+              VALUES ($1, $2, 'active', $3, $4) ON CONFLICT (email) DO UPDATE SET expires_at = $3, license_key = $4`
     _, err := r.db.Exec(query, email, plan, time.Now().Add(duration), code)
     return err
 }
@@ -68,8 +69,8 @@ func (r *pgRepo) ActivateLicense(ctx context.Context, key string, fp string) (mo
     var sub models.Subscription
     var subID int // локальный ID для связей в БД
 
-    // Используем твой PlanType
-    query := `SELECT id, email, plan_type, expires_at FROM subscriptions WHERE access_code = $1 AND expires_at > NOW()`
+    // ИСПРАВЛЕНО: access_code -> license_key
+    query := `SELECT id, email, plan_type, expires_at FROM subscriptions WHERE license_key = $1 AND expires_at > NOW()`
     err := r.db.QueryRowContext(ctx, query, key).Scan(&subID, &sub.Email, &sub.PlanType, &sub.ExpiresAt)
     if err != nil { return sub, err }
 
